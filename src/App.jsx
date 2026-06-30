@@ -28,12 +28,12 @@ function isPDF(dataUrl){ return dataUrl&&dataUrl.startsWith("data:application/pd
 function isImage(dataUrl){ return dataUrl&&dataUrl.startsWith("data:image"); }
 function getFileName(f){ return f?.name||"file"; }
 
-const SEED_PROJECTS = [
+const SEED_PROJECTS_UNUSED = [
   { id:"p1", name:"Biệt thự Thảo Điền", client:"Anh Minh Tuấn", phone:"0901234567", address:"Thảo Điền, Q2", type:"Nội thất cao cấp", status:"active", contractValue:850000000, startDate:"2026-04-01", endDate:"2026-09-30", note:"Phong cách Japandi, gỗ óc chó", contractFile:null, contractFileName:"" },
   { id:"p2", name:"VP Công ty FintechX", client:"Chị Lan Anh", phone:"0912345678", address:"Cầu Giấy, Hà Nội", type:"Thi công hoàn thiện", status:"active", contractValue:420000000, startDate:"2026-05-15", endDate:"2026-08-15", note:"Thiết kế mở, màu xanh dương", contractFile:null, contractFileName:"" },
   { id:"p3", name:"Căn hộ Vinhomes", client:"Anh Hùng", phone:"0923456789", address:"Bình Thạnh, HCM", type:"Decor & Nội thất", status:"done", contractValue:180000000, startDate:"2026-01-10", endDate:"2026-03-30", note:"Hoàn thành đúng tiến độ", contractFile:null, contractFileName:"" },
 ];
-const SEED_RECEIPTS = [
+const SEED_RECEIPTS_UNUSED = [
   { id:"r1", projectId:"p1", date:"2026-04-10", amount:255000000, note:"Thu đợt 1 – 30% hợp đồng", attachments:[] },
   { id:"r2", projectId:"p1", date:"2026-06-01", amount:255000000, note:"Thu đợt 2 – 30% tiến độ", attachments:[] },
   { id:"r3", projectId:"p2", date:"2026-05-20", amount:126000000, note:"Thu đợt 1 – 30% hợp đồng", attachments:[] },
@@ -41,7 +41,7 @@ const SEED_RECEIPTS = [
   { id:"r5", projectId:"p3", date:"2026-02-20", amount:90000000, note:"Thu đợt 2 – 50%", attachments:[] },
   { id:"r6", projectId:"p3", date:"2026-04-05", amount:36000000, note:"Thu quyết toán", attachments:[] },
 ];
-const SEED_EXPENSES = [
+const SEED_EXPENSES_UNUSED = [
   { id:"e1", projectId:"p1", date:"2026-04-15", category:"Vật tư", amount:85000000, vendorId:"v1", note:"Gỗ óc chó nhập khẩu", paid:true },
   { id:"e2", projectId:"p1", date:"2026-04-20", category:"Đội thi công", amount:60000000, vendorId:"v2", note:"Đội thợ mộc – T4", paid:true },
   { id:"e3", projectId:"p1", date:"2026-05-15", category:"Vật tư", amount:40000000, vendorId:"v1", note:"Sơn, phụ kiện", paid:false },
@@ -53,7 +53,7 @@ const SEED_EXPENSES = [
   { id:"e9", projectId:"p3", date:"2026-02-15", category:"Đội thi công", amount:40000000, vendorId:"v2", note:"Đội lắp đặt T2", paid:true },
   { id:"e10", projectId:"p3", date:"2026-03-10", category:"Chi phí khác", amount:8000000, vendorId:null, note:"Vận chuyển & phát sinh", paid:true },
 ];
-const SEED_VENDORS = [
+const SEED_VENDORS_UNUSED = [
   { id:"v1", name:"Gỗ Trường Phát", type:"supplier", phone:"0934567890", category:"Vật tư – Gỗ", note:"NCC gỗ nhập khẩu uy tín" },
   { id:"v2", name:"Đội thợ anh Bình", type:"team", phone:"0945678901", category:"Đội thi công", note:"Thợ mộc & lắp đặt nội thất" },
   { id:"v3", name:"Vật Liệu Xây Dựng Hoà Bình", type:"supplier", phone:"0956789012", category:"Vật tư – Xây dựng", note:"Cung cấp vật liệu hoàn thiện" },
@@ -275,6 +275,11 @@ function SectionHead({title,action}){
     </div>
   );
 }
+
+const SEED_PROJECTS = [];
+const SEED_RECEIPTS = [];
+const SEED_EXPENSES = [];
+const SEED_VENDORS = [];
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App(){
