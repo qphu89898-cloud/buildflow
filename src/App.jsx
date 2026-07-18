@@ -1,44 +1,25 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 
-// ── Google Sheets API ─────────────────────────────────────────────────────────
-const API_URL = "https://script.google.com/macros/s/AKfycbzia8BCvW7-TBZrnkmJCueIQfHrmyz99GuGX2T25cHCpGxYXNLgzJOx24zSVJrW-vgu/exec";
+// ── Lưu trữ cục bộ trên trình duyệt (localStorage) ────────────────────────────
+// Dữ liệu được lưu ngay trên máy tính đang mở app, tự động lưu mỗi khi có
+// thay đổi (thêm/sửa/xoá), không cần internet, không cần Google Sheets.
+// Lưu ý: dữ liệu gắn với TRÌNH DUYỆT + MÁY TÍNH cụ thể đang dùng — mở app
+// trên máy khác hoặc trình duyệt khác sẽ không thấy dữ liệu này.
+const STORAGE_KEY = "buildflow_data_v1";
 
-async function apiGet(sheet) {
+function loadFromStorage() {
   try {
-    const res = await fetch(`${API_URL}?sheet=${sheet}`);
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  } catch(e) { console.error("apiGet error", e); return []; }
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(e) { console.error("loadFromStorage error", e); return null; }
 }
 
-async function apiPost(action, sheet, data) {
+function saveToStorage(data) {
   try {
-    const res = await fetch(API_URL, {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({action, sheet, data})
-    });
-    return await res.json();
-  } catch(e) { console.error("apiPost error", e); return {success:false}; }
-}
-
-async function uploadFileToDrive(fileObj) {
-  // fileObj = { name, dataUrl, size }
-  if(!fileObj||!fileObj.dataUrl) return null;
-  try {
-    const res = await fetch(API_URL, {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({
-        action:"uploadFile",
-        sheet:"",
-        data:{ base64: fileObj.dataUrl, fileName: fileObj.name, mimeType: fileObj.dataUrl.split(";")[0].split(":")[1] }
-      })
-    });
-    const result = await res.json();
-    if(result.success) return { name: fileObj.name, dataUrl: result.directUrl, fileUrl: result.fileUrl, driveId: result.fileId };
-    return null;
-  } catch(e) { console.error("upload error", e); return null; }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    return true;
+  } catch(e) { console.error("saveToStorage error", e); return false; }
 }
 
 
@@ -343,26 +324,63 @@ export default function App(){
     setTimeout(()=>setToast(null), 3000);
   }
 
-  // Load all data from Google Sheets on mount
+  // Đọc dữ liệu đã lưu trên máy (localStorage) ngay khi mở app
   useEffect(()=>{
-    async function loadAll() {
-      setLoading(true);
-      try {
-        const [p,r,e,v] = await Promise.all([
-          apiGet("projects"), apiGet("receipts"),
-          apiGet("expenses"), apiGet("vendors")
-        ]);
-        setProjects(p.map(x=>({...x, contractValue:parseFloat(x.contractValue)||0, attachments:[] })));
-        setReceipts(r.map(x=>({...x, amount:parseFloat(x.amount)||0,
-          attachments: x.attachmentUrls ? x.attachmentUrls.split("|").filter(Boolean).map(u=>({name:"file",dataUrl:u,fileUrl:u})) : []
-        })));
-        setExpenses(e.map(x=>({...x, amount:parseFloat(x.amount)||0, paid: x.paid==="true"||x.paid===true })));
-        setVendors(v);
-      } catch(err) { console.error(err); }
-      setLoading(false);
+    setLoading(true);
+    const saved = loadFromStorage();
+    if (saved) {
+      setProjects(saved.projects || []);
+      setReceipts(saved.receipts || []);
+      setExpenses(saved.expenses || []);
+      setVendors(saved.vendors || []);
     }
-    loadAll();
+    setLoading(false);
   },[]);
+
+  // Tự động lưu xuống máy MỖI KHI có bất kỳ thay đổi nào ở 4 danh sách này.
+  // Không cần bấm nút gì cả — cứ thêm/sửa/xoá là lưu ngay lập tức.
+  const isFirstRun = useRef(true);
+  useEffect(()=>{
+    if (isFirstRun.current) { isFirstRun.current = false; return; } // tránh ghi đè lúc mới load
+    saveToStorage({ projects, receipts, expenses, vendors });
+  },[projects, receipts, expenses, vendors]);
+
+  // ── Xuất dữ liệu ra file thật (JSON) — bạn tự chọn nơi lưu trên ổ đĩa ────────
+  const importFileRef = useRef(null);
+
+  function exportToFile() {
+    const payload = { projects, receipts, expenses, vendors, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `buildflow-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Đã tải file backup xuống máy ✓");
+  }
+
+  function importFromFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!window.confirm("Nạp dữ liệu từ file này sẽ THAY THẾ toàn bộ dữ liệu hiện tại trong app. Bạn chắc chắn muốn tiếp tục?")) return;
+        setProjects(data.projects || []);
+        setReceipts(data.receipts || []);
+        setExpenses(data.expenses || []);
+        setVendors(data.vendors || []);
+        showToast("Đã nạp dữ liệu từ file thành công ✓");
+      } catch(err) {
+        showToast("File không đúng định dạng, không thể nạp ✗", "error");
+      }
+    };
+    reader.readAsText(file);
+  }
 
   // ── derived ────────────────────────────────────────────────────────────────
   const totalContract = projects.reduce((s,p)=>s+p.contractValue,0);
@@ -410,81 +428,45 @@ export default function App(){
   const [vForm,setVForm] = useState(blankV);
   const [newContractFiles,setNewContractFiles] = useState([]);
 
-  async function saveProject(){
+  function saveProject(){
     if(!pForm.name||!pForm.contractValue) return;
-    setSaving(true);
-    let cf = newContractFiles.length>0 ? newContractFiles[0] : (pForm.contractFile||null);
-    let contractFileUrl = pForm.contractFileUrl || "";
-    let contractFileName = pForm.contractFileName || "";
-    // Upload new contract file to Drive if any
-    if(newContractFiles.length>0) {
-      const uploaded = await uploadFileToDrive(newContractFiles[0]);
-      if(uploaded) { cf=uploaded; contractFileUrl=uploaded.fileUrl; contractFileName=uploaded.name; }
-    }
-    const id = editItem?.id || "p"+Date.now();
-    const obj={...pForm, contractValue:parseFloat(pForm.contractValue), id,
-      contractFile:cf, contractFileName, contractFileUrl };
-    // Save to Sheets
-    const sheetData = { id, name:obj.name, client:obj.client, phone:obj.phone,
-      address:obj.address, type:obj.type, status:obj.status,
-      contractValue:obj.contractValue, startDate:obj.startDate, endDate:obj.endDate,
-      note:obj.note, contractFileUrl, contractFileName };
-    if(editItem) { await apiPost("update","projects",sheetData); }
-    else { await apiPost("append","projects",sheetData); }
+    const cf = newContractFiles.length>0 ? newContractFiles[0] : (pForm.contractFile||null);
+    const obj={...pForm, contractValue:parseFloat(pForm.contractValue), id:editItem?.id||"p"+Date.now(),
+      contractFile:cf, contractFileName:cf?.name||"" };
     setProjects(prev=>editItem?prev.map(p=>p.id===editItem.id?obj:p):[obj,...prev]);
-    setSaving(false); setModal(null); setEditItem(null); setPForm(blankP); setNewContractFiles([]);
-    showToast("Đã lưu công trình lên Google Sheets ✓");
+    setModal(null); setEditItem(null); setPForm(blankP); setNewContractFiles([]);
+    showToast("Đã lưu công trình vào máy ✓");
   }
-  async function saveReceipt(){
+  function saveReceipt(){
     if(!rForm.projectId||!rForm.amount) return;
-    setSaving(true);
-    // Upload new attachments to Drive
-    const uploadedAttachments = [];
-    for(const att of (rForm.attachments||[])) {
-      if(att.driveId) { uploadedAttachments.push(att); continue; } // already uploaded
-      const up = await uploadFileToDrive(att);
-      uploadedAttachments.push(up || att);
-    }
     const id = editItem?.id || "r"+Date.now();
-    const obj = {...rForm, amount:parseFloat(rForm.amount), id, attachments:uploadedAttachments, _type:undefined};
-    const attachmentUrls = uploadedAttachments.map(a=>a.fileUrl||a.dataUrl||"").filter(Boolean).join("|");
-    const sheetData = { id, projectId:obj.projectId, date:obj.date, amount:obj.amount, note:obj.note, attachmentUrls };
+    const obj = {...rForm, amount:parseFloat(rForm.amount), id, _type:undefined};
     if(editItem&&editItem._type==="income") {
-      await apiPost("update","receipts",sheetData);
       setReceipts(prev=>prev.map(r=>r.id===editItem.id?obj:r));
     } else {
-      await apiPost("append","receipts",sheetData);
       setReceipts(prev=>[obj,...prev]);
     }
-    setSaving(false); setModal(null); setRForm(blankR); setEditItem(null);
-    showToast("Đã lưu khoản thu lên Google Sheets ✓");
+    setModal(null); setRForm(blankR); setEditItem(null);
+    showToast("Đã lưu khoản thu vào máy ✓");
   }
-  async function saveExpense(){
+  function saveExpense(){
     if(!eForm.projectId||!eForm.amount) return;
-    setSaving(true);
     const id = editItem?.id || "e"+Date.now();
     const obj = {...eForm, amount:parseFloat(eForm.amount), id, _type:undefined};
-    const sheetData = { id, projectId:obj.projectId, date:obj.date, category:obj.category,
-      amount:obj.amount, vendorId:obj.vendorId||"", note:obj.note, paid:String(obj.paid) };
     if(editItem&&editItem._type==="expense") {
-      await apiPost("update","expenses",sheetData);
       setExpenses(prev=>prev.map(e=>e.id===editItem.id?obj:e));
     } else {
-      await apiPost("append","expenses",sheetData);
       setExpenses(prev=>[obj,...prev]);
     }
-    setSaving(false); setModal(null); setEForm(blankE); setEditItem(null);
-    showToast("Đã lưu khoản chi lên Google Sheets ✓");
+    setModal(null); setEForm(blankE); setEditItem(null);
+    showToast("Đã lưu khoản chi vào máy ✓");
   }
-  async function saveVendor(){
+  function saveVendor(){
     if(!vForm.name) return;
-    setSaving(true);
-    const id = "v"+Date.now();
-    const obj = {...vForm, id};
-    await apiPost("append","vendors",obj);
+    const obj = {...vForm, id:"v"+Date.now()};
     setVendors(prev=>[obj,...prev]);
-    setSaving(false); setModal(null); setVForm(blankV);
-    showToast("Đã lưu NCC/Đội lên Google Sheets ✓");
+    setModal(null); setVForm(blankV);
+    showToast("Đã lưu NCC/Đội vào máy ✓");
   }
 
   const activeProj = projects.find(p=>p.id===selProjId);
@@ -529,7 +511,7 @@ export default function App(){
         <div style={{position:"fixed",inset:0,background:"rgba(255,255,255,0.95)",zIndex:9997,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
           <div style={{fontSize:40}}>🏛</div>
           <div style={{fontSize:16,fontWeight:700,color:"#1a1916"}}>BuildFlow</div>
-          <div style={{fontSize:13,color:"#706e68"}}>Đang tải dữ liệu từ Google Sheets...</div>
+          <div style={{fontSize:13,color:"#706e68"}}>Đang tải dữ liệu đã lưu trên máy...</div>
           <div style={{width:200,height:4,background:"#eee",borderRadius:4,overflow:"hidden",marginTop:8}}>
             <div style={{width:"60%",height:"100%",background:"#2563eb",borderRadius:4,animation:"pulse 1s infinite"}}/>
           </div>
@@ -543,9 +525,23 @@ export default function App(){
               <div style={{fontSize:18,fontWeight:700,color:"#fff",letterSpacing:-0.3}}>🏛 BuildFlow</div>
               <div style={{fontSize:11,color:"#888",marginTop:1}}>Quản lý dòng tiền thi công & nội thất</div>
             </div>
-            <div style={{textAlign:"right"}}>
-              <div style={{fontSize:11,color:"#888"}}>Số dư ròng</div>
-              <div style={{fontSize:20,fontWeight:700,color:netFlow>=0?"#4ade80":"#f87171"}}>{fmtM(netFlow)}</div>
+            <div style={{display:"flex",alignItems:"center",gap:16}}>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={exportToFile} title="Tải file backup xuống máy (JSON)"
+                  style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.2)",background:"rgba(255,255,255,0.08)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
+                  💾 Sao lưu
+                </button>
+                <button onClick={()=>importFileRef.current?.click()} title="Nạp lại dữ liệu từ file backup đã lưu"
+                  style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.2)",background:"rgba(255,255,255,0.08)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
+                  📂 Nạp lại
+                </button>
+                <input ref={importFileRef} type="file" accept=".json" style={{display:"none"}}
+                  onChange={e=>{ if(e.target.files[0]) importFromFile(e.target.files[0]); e.target.value=""; }}/>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:11,color:"#888"}}>Số dư ròng</div>
+                <div style={{fontSize:20,fontWeight:700,color:netFlow>=0?"#4ade80":"#f87171"}}>{fmtM(netFlow)}</div>
+              </div>
             </div>
           </div>
           <div style={{display:"flex",gap:2,marginTop:12,flexWrap:"wrap"}}>
@@ -813,7 +809,7 @@ export default function App(){
                           <span style={{fontWeight:700,color:C.danger}}>-{fmtM(e.amount)}</span>
                           {e.paid
                             ? <Tag label="Đã TT" bg={C.successB} color={C.success}/>
-                            : <button onClick={async()=>{await apiPost('update','expenses',{...e,paid:'true',vendorId:e.vendorId||''}); setExpenses(prev=>prev.map(x=>x.id===e.id?{...x,paid:true}:x)); showToast('Đã đánh dấu thanh toán ✓');}} style={{...btn(C.warnB,C.warn),padding:"3px 8px",fontSize:11}}>Thanh toán</button>
+                            : <button onClick={()=>{setExpenses(prev=>prev.map(x=>x.id===e.id?{...x,paid:true}:x)); showToast('Đã đánh dấu thanh toán ✓');}} style={{...btn(C.warnB,C.warn),padding:"3px 8px",fontSize:11}}>Thanh toán</button>
                           }
                         </div>
                       </div>
@@ -870,13 +866,11 @@ export default function App(){
                             setModal("expense");
                           }
                         }} style={{width:30,height:30,borderRadius:8,border:"1px solid #e2e8f0",background:"#fff",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
-                        <button title="Xoá" onClick={async()=>{
+                        <button title="Xoá" onClick={()=>{
                           if(!window.confirm("Xoá giao dịch này?")) return;
                           if(tx._type==="income") {
-                            await apiPost("delete","receipts",{id:tx.id});
                             setReceipts(prev=>prev.filter(r=>r.id!==tx.id));
                           } else {
-                            await apiPost("delete","expenses",{id:tx.id});
                             setExpenses(prev=>prev.filter(e=>e.id!==tx.id));
                           }
                           showToast("Đã xoá giao dịch ✓");
@@ -943,7 +937,7 @@ export default function App(){
                             <div style={{display:"flex",gap:8,alignItems:"center"}}>
                               <span style={{fontWeight:600}}>{fmtM(e.amount)}</span>
                               {e.paid?<Tag label="Đã TT" bg={C.successB} color={C.success}/>
-                                :<button onClick={async()=>{await apiPost('update','expenses',{...e,paid:'true',vendorId:e.vendorId||''}); setExpenses(prev=>prev.map(x=>x.id===e.id?{...x,paid:true}:x)); showToast('Đã đánh dấu thanh toán ✓');}} style={{...btn(C.warnB,C.warn),padding:"3px 8px",fontSize:11}}>Thanh toán</button>}
+                                :<button onClick={()=>{setExpenses(prev=>prev.map(x=>x.id===e.id?{...x,paid:true}:x)); showToast('Đã đánh dấu thanh toán ✓');}} style={{...btn(C.warnB,C.warn),padding:"3px 8px",fontSize:11}}>Thanh toán</button>}
                             </div>
                           </div>
                         );
