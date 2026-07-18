@@ -34,14 +34,23 @@ const C = {
 };
 const R = { sm:8, md:12, lg:16 };
 
-function fmt(n) { if(!n&&n!==0) return "—"; return new Intl.NumberFormat("vi-VN").format(n)+"đ"; }
+function fmt(n) {
+  if(!n&&n!==0) return "—";
+  // Hiện đủ số thập phân nếu có (tối đa 2 số lẻ), không hiện .00 thừa với số nguyên
+  const hasDecimal = Math.abs(n % 1) > 0.0001;
+  return new Intl.NumberFormat("vi-VN", {
+    minimumFractionDigits: hasDecimal ? 2 : 0,
+    maximumFractionDigits: 2
+  }).format(n) + "đ";
+}
 function fmtM(n) {
   if(!n&&n!==0) return "0đ";
   const abs=Math.abs(n), sign=n<0?"-":"";
-  if(abs>=1e9) return sign+(abs/1e9).toFixed(1).replace(".0","")+" tỷ";
-  if(abs>=1e6) return sign+(abs/1e6).toFixed(0)+" tr";
-  if(abs>=1e3) return sign+(abs/1e3).toFixed(0)+"k";
-  return sign+abs;
+  if(abs>=1e9) return sign+(abs/1e9).toFixed(2).replace(/\.?0+$/,"")+" tỷ";
+  if(abs>=1e6) return sign+(abs/1e6).toFixed(2).replace(/\.?0+$/,"")+" tr";
+  if(abs>=1e3) return sign+(abs/1e3).toFixed(2).replace(/\.?0+$/,"")+"k";
+  const hasDecimal = abs % 1 > 0.0001;
+  return sign+(hasDecimal ? abs.toFixed(2) : abs);
 }
 function today(){ return new Date().toISOString().slice(0,10); }
 
@@ -318,6 +327,7 @@ export default function App(){
   const [loading,setLoading] = useState(true);
   const [saving,setSaving] = useState(false);
   const [toast,setToast] = useState(null);
+  const [cashflowSearch,setCashflowSearch] = useState("");
 
   function showToast(msg, type="success") {
     setToast({msg,type});
@@ -390,12 +400,23 @@ export default function App(){
   const netFlow       = totalReceived - totalExpense;
   const pendingRecv   = totalContract - totalReceived;
 
+  // Tự động lấy năm hiện tại thay vì cố định "2026" — tránh biểu đồ trống
+  // khi dữ liệu người dùng nhập vào không đúng năm 2026.
+  const currentYear = useMemo(()=>{
+    const years = [...receipts.map(r=>r.date?.slice(0,4)), ...expenses.map(e=>e.date?.slice(0,4))].filter(Boolean);
+    if (years.length === 0) return String(new Date().getFullYear());
+    // Lấy năm xuất hiện nhiều nhất trong dữ liệu thực tế
+    const freq = {};
+    years.forEach(y=>freq[y]=(freq[y]||0)+1);
+    return Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0];
+  },[receipts,expenses]);
+
   const monthlyData = useMemo(()=>Array.from({length:12},(_,i)=>{
     const m=String(i+1).padStart(2,"0");
-    const inc=receipts.filter(r=>r.date.slice(5,7)===m&&r.date.startsWith("2026")).reduce((s,r)=>s+r.amount,0);
-    const exp=expenses.filter(e=>e.date.slice(5,7)===m&&e.date.startsWith("2026")).reduce((s,e)=>s+e.amount,0);
+    const inc=receipts.filter(r=>r.date&&r.date.slice(5,7)===m&&r.date.startsWith(currentYear)).reduce((s,r)=>s+r.amount,0);
+    const exp=expenses.filter(e=>e.date&&e.date.slice(5,7)===m&&e.date.startsWith(currentYear)).reduce((s,e)=>s+e.amount,0);
     return {label:MONTHS[i],inc,exp,net:inc-exp};
-  }),[receipts,expenses]);
+  }),[receipts,expenses,currentYear]);
 
   const forecastMonths = useMemo(()=>{
     const with3=monthlyData.filter(m=>m.inc>0||m.exp>0).slice(-3);
@@ -410,15 +431,18 @@ export default function App(){
 
   function projectStats(pid){
     const p=projects.find(x=>x.id===pid);
-    const recv=receipts.filter(r=>r.projectId===pid).reduce((s,r)=>s+r.amount,0);
+    const projReceipts = receipts.filter(r=>r.projectId===pid);
+    const recv = projReceipts.reduce((s,r)=>s+r.amount,0);
+    const extraRecv = projReceipts.filter(r=>r.isExtra).reduce((s,r)=>s+r.amount,0);
+    const contractRecv = recv - extraRecv;
     const exp =expenses.filter(e=>e.projectId===pid).reduce((s,e)=>s+e.amount,0);
-    return {recv,exp,net:recv-exp,remaining:(p?.contractValue||0)-recv};
+    return {recv,exp,net:recv-exp,remaining:(p?.contractValue||0)-contractRecv,extraRecv,contractRecv};
   }
   function vendorDebt(vid){ return expenses.filter(e=>e.vendorId===vid&&!e.paid).reduce((s,e)=>s+e.amount,0); }
 
   // ── forms ─────────────────────────────────────────────────────────────────
   const blankP = {name:"",client:"",phone:"",address:"",type:PROJECT_TYPES[0],status:"active",contractValue:"",startDate:today(),endDate:"",note:"",contractFile:null,contractFileName:""};
-  const blankR = {projectId:"",date:today(),amount:"",note:"",attachments:[]};
+  const blankR = {projectId:"",date:today(),amount:"",note:"",attachments:[],isExtra:false};
   const blankE = {projectId:"",date:today(),category:EXPENSE_CATS[0],amount:"",vendorId:"",note:"",paid:false};
   const blankV = {name:"",type:"supplier",phone:"",category:"Vật tư",note:""};
 
@@ -580,14 +604,14 @@ export default function App(){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
               {/* Bar chart */}
               <div style={card({padding:20})}>
-                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Thu/Chi theo tháng 2026</div>
-                <BarChart data={monthlyData.slice(0,6)} height={130}/>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Thu/Chi theo tháng {currentYear}</div>
+                <BarChart data={monthlyData} height={130}/>
               </div>
               {/* Line chart: net cumulative */}
               <div style={card({padding:20})}>
-                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Số dư tích lũy 2026</div>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Số dư tích lũy {currentYear}</div>
                 <LineChart
-                  points={monthlyData.slice(0,6).reduce((acc,m,i)=>{
+                  points={monthlyData.reduce((acc,m,i)=>{
                     const prev=acc.length?acc[acc.length-1].y:0;
                     acc.push({label:m.label,y:prev+m.net});
                     return acc;
@@ -752,8 +776,9 @@ export default function App(){
                 <div style={{marginTop:16,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10}}>
                   {[
                     {label:"Giá trị HĐ",val:p.contractValue,color:C.accent},
-                    {label:"Đã thu",val:st.recv,color:C.success},
+                    {label:"Đã thu (HĐ gốc)",val:st.contractRecv,color:C.success},
                     {label:"Còn thu",val:st.remaining,color:C.amber},
+                    {label:"Thu phát sinh",val:st.extraRecv,color:C.purple},
                     {label:"Đã chi",val:st.exp,color:C.danger},
                     {label:"Lợi nhuận tạm",val:st.net,color:st.net>=0?C.success:C.danger},
                   ].map(s=>(
@@ -774,7 +799,10 @@ export default function App(){
                   pRec.map(r=>(
                     <div key={r.id} style={{padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
                       <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-                        <div><span style={{color:C.muted}}>{r.date}</span> · {r.note}</div>
+                        <div>
+                          <span style={{color:C.muted}}>{r.date}</span> · {r.note}
+                          {r.isExtra && <span style={{marginLeft:6}}><Tag label="Phát sinh" bg="#f0e6ff" color={C.purple}/></span>}
+                        </div>
                         <span style={{fontWeight:700,color:C.success,flexShrink:0,marginLeft:12}}>+{fmtM(r.amount)}</span>
                       </div>
                       {r.attachments&&r.attachments.length>0 && (
@@ -824,13 +852,37 @@ export default function App(){
         {/* ── CASHFLOW ──────────────────────────────────────────────────── */}
         {tab==="cashflow" && (
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
-            <div style={{display:"flex",gap:10,justifyContent:"flex-end",flexWrap:"wrap"}}>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{position:"relative",flex:1,minWidth:200}}>
+                <input
+                  value={cashflowSearch}
+                  onChange={e=>setCashflowSearch(e.target.value)}
+                  placeholder="🔍 Tìm theo ghi chú, công trình, NCC, danh mục..."
+                  style={{...inp, paddingLeft:14}}
+                />
+                {cashflowSearch && (
+                  <button onClick={()=>setCashflowSearch("")} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",border:"none",background:"none",cursor:"pointer",color:C.muted,fontSize:16}}>×</button>
+                )}
+              </div>
               <button style={btn(C.successB,C.success)} onClick={()=>{setEditItem(null);setRForm(blankR);setModal("receipt");}}>+ Ghi thu</button>
               <button style={btn("#fee2e2",C.danger)} onClick={()=>{setEditItem(null);setEForm(blankE);setModal("expense");}}>+ Ghi chi</button>
             </div>
-            {[...receipts.map(r=>({...r,_type:"income"})),...expenses.map(e=>({...e,_type:"expense"}))]
-              .sort((a,b)=>b.date.localeCompare(a.date))
-              .map(tx=>{
+            {(() => {
+              const allTx = [...receipts.map(r=>({...r,_type:"income"})),...expenses.map(e=>({...e,_type:"expense"}))]
+                .sort((a,b)=>b.date.localeCompare(a.date));
+              const q = cashflowSearch.trim().toLowerCase();
+              const filtered = q ? allTx.filter(tx=>{
+                const proj = projects.find(p=>p.id===tx.projectId);
+                const vendor = vendors.find(v=>v.id===tx.vendorId);
+                const haystack = [tx.note, proj?.name, vendor?.name, tx.category, tx.date].filter(Boolean).join(" ").toLowerCase();
+                return haystack.includes(q);
+              }) : allTx;
+              if (filtered.length===0) {
+                return <div style={{textAlign:"center",padding:"32px 0",color:C.hint,fontSize:13}}>
+                  {q ? `Không tìm thấy giao dịch nào khớp với "${cashflowSearch}"` : "Chưa có giao dịch nào."}
+                </div>;
+              }
+              return filtered.map(tx=>{
                 const proj=projects.find(p=>p.id===tx.projectId);
                 const vendor=vendors.find(v=>v.id===tx.vendorId);
                 return (
@@ -841,7 +893,10 @@ export default function App(){
                           {tx._type==="income"?"💵":"🧾"}
                         </div>
                         <div style={{minWidth:0}}>
-                          <div style={{fontSize:13,fontWeight:600}}>{tx.note}</div>
+                          <div style={{fontSize:13,fontWeight:600,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                            {tx.note}
+                            {tx._type==="income"&&tx.isExtra && <Tag label="Phát sinh" bg="#f0e6ff" color={C.purple}/>}
+                          </div>
                           <div style={{fontSize:11,color:C.muted}}>
                             {proj?.name} · {tx.date}
                             {vendor&&` · ${vendor.name}`}
@@ -859,7 +914,7 @@ export default function App(){
                         <button title="Sửa" onClick={()=>{
                           setEditItem(tx);
                           if(tx._type==="income"){
-                            setRForm({projectId:tx.projectId,date:tx.date,amount:String(tx.amount),note:tx.note,attachments:tx.attachments||[]});
+                            setRForm({projectId:tx.projectId,date:tx.date,amount:String(tx.amount),note:tx.note,attachments:tx.attachments||[],isExtra:tx.isExtra||false});
                             setModal("receipt");
                           } else {
                             setEForm({projectId:tx.projectId,date:tx.date,category:tx.category,amount:String(tx.amount),vendorId:tx.vendorId||"",note:tx.note,paid:tx.paid});
@@ -884,8 +939,8 @@ export default function App(){
                     )}
                   </div>
                 );
-              })
-            }
+              });
+            })()}
           </div>
         )}
 
@@ -953,8 +1008,8 @@ export default function App(){
         {/* ── REPORT (Dòng tiền) ────────────────────────────────────────── */}
         {tab==="report" && (()=>{
           const mPad = selMonth!==null ? String(selMonth+1).padStart(2,"0") : null;
-          const mRec = mPad ? receipts.filter(r=>r.date.slice(5,7)===mPad&&r.date.startsWith("2026")) : [];
-          const mExp = mPad ? expenses.filter(e=>e.date.slice(5,7)===mPad&&e.date.startsWith("2026")) : [];
+          const mRec = mPad ? receipts.filter(r=>r.date&&r.date.slice(5,7)===mPad&&r.date.startsWith(currentYear)) : [];
+          const mExp = mPad ? expenses.filter(e=>e.date&&e.date.slice(5,7)===mPad&&e.date.startsWith(currentYear)) : [];
           const mInc = mRec.reduce((s,r)=>s+r.amount,0);
           const mExpSum = mExp.reduce((s,e)=>s+e.amount,0);
           return (
@@ -980,7 +1035,7 @@ export default function App(){
             {/* Charts */}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
               <div style={card({padding:20})}>
-                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Thu/Chi thực tế 2026</div>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Thu/Chi thực tế {currentYear}</div>
                 <BarChart data={monthlyData} height={140} showLegend={true}/>
               </div>
               <div style={card({padding:20})}>
@@ -1113,7 +1168,7 @@ export default function App(){
 
             {/* Monthly summary table */}
             <div style={card({padding:20})}>
-              <SectionHead title="Tổng hợp dòng tiền 2026"/>
+              <SectionHead title={`Tổng hợp dòng tiền ${currentYear}`}/>
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                   <thead>
@@ -1170,7 +1225,7 @@ export default function App(){
             <Field label="Tên khách hàng"><input style={inp} value={pForm.client} onChange={e=>setPForm(f=>({...f,client:e.target.value}))} placeholder="Anh/Chị..."/></Field>
             <Field label="Số điện thoại"><input style={inp} value={pForm.phone} onChange={e=>setPForm(f=>({...f,phone:e.target.value}))} placeholder="09xx..."/></Field>
             <Field label="Địa chỉ" span2><input style={inp} value={pForm.address} onChange={e=>setPForm(f=>({...f,address:e.target.value}))} placeholder="Địa chỉ công trình..."/></Field>
-            <Field label="Giá trị hợp đồng (đ) *"><input type="number" style={inp} value={pForm.contractValue} onChange={e=>setPForm(f=>({...f,contractValue:e.target.value}))} placeholder="VD: 500000000"/></Field>
+            <Field label="Giá trị hợp đồng (đ) *"><input type="number" step="any" style={inp} value={pForm.contractValue} onChange={e=>setPForm(f=>({...f,contractValue:e.target.value}))} placeholder="VD: 500000000"/></Field>
             <Field label="Ngày bắt đầu"><input type="date" style={inp} value={pForm.startDate} onChange={e=>setPForm(f=>({...f,startDate:e.target.value}))}/></Field>
             <Field label="Ngày kết thúc dự kiến"><input type="date" style={inp} value={pForm.endDate} onChange={e=>setPForm(f=>({...f,endDate:e.target.value}))}/></Field>
             <Field label="Ghi chú" span2><input style={inp} value={pForm.note} onChange={e=>setPForm(f=>({...f,note:e.target.value}))} placeholder="Phong cách, yêu cầu đặc biệt..."/></Field>
@@ -1208,8 +1263,14 @@ export default function App(){
             </select>
           </Field>
           <Field label="Ngày thu"><input type="date" style={inp} value={rForm.date} onChange={e=>setRForm(f=>({...f,date:e.target.value}))}/></Field>
-          <Field label="Số tiền (đ) *"><input type="number" style={inp} value={rForm.amount} onChange={e=>setRForm(f=>({...f,amount:e.target.value}))} placeholder="VD: 100000000"/></Field>
+          <Field label="Số tiền (đ) *"><input type="number" step="any" style={inp} value={rForm.amount} onChange={e=>setRForm(f=>({...f,amount:e.target.value}))} placeholder="VD: 100000000"/></Field>
           <Field label="Ghi chú"><input style={inp} value={rForm.note} onChange={e=>setRForm(f=>({...f,note:e.target.value}))} placeholder="Thu đợt 1 – 30% hợp đồng..."/></Field>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,background:rForm.isExtra?C.warnB:"transparent",padding:rForm.isExtra?"10px 12px":"0",borderRadius:8,transition:"all .2s"}}>
+            <input type="checkbox" id="isExtra" checked={rForm.isExtra||false} onChange={e=>setRForm(f=>({...f,isExtra:e.target.checked}))}/>
+            <label htmlFor="isExtra" style={{fontSize:13}}>
+              💡 Đây là khoản <strong>thu phát sinh</strong> (ngoài giá trị hợp đồng gốc — khách yêu cầu thêm/đổi hạng mục)
+            </label>
+          </div>
           {/* Attachments */}
           <Field label="📎 Đính kèm chứng từ (hình ảnh hoặc PDF)">
             <FileUploadZone
@@ -1243,7 +1304,7 @@ export default function App(){
             <Field label="Ngày chi"><input type="date" style={inp} value={eForm.date} onChange={e=>setEForm(f=>({...f,date:e.target.value}))}/></Field>
             <Field label="Danh mục"><select style={inp} value={eForm.category} onChange={e=>setEForm(f=>({...f,category:e.target.value}))}>{EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}</select></Field>
           </div>
-          <Field label="Số tiền (đ) *"><input type="number" style={inp} value={eForm.amount} onChange={e=>setEForm(f=>({...f,amount:e.target.value}))} placeholder="VD: 50000000"/></Field>
+          <Field label="Số tiền (đ) *"><input type="number" step="any" style={inp} value={eForm.amount} onChange={e=>setEForm(f=>({...f,amount:e.target.value}))} placeholder="VD: 50000000"/></Field>
           <Field label="NCC/Đội thi công">
             <select style={inp} value={eForm.vendorId} onChange={e=>setEForm(f=>({...f,vendorId:e.target.value}))}>
               <option value="">-- Chọn (tuỳ chọn) --</option>
