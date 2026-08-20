@@ -93,7 +93,8 @@ const SEED_VENDORS_UNUSED = [
   { id:"v5", name:"Cho thuê máy Minh Phát", type:"supplier", phone:"0978901234", category:"Máy móc", note:"Thuê máy móc thi công" },
 ];
 
-const EXPENSE_CATS = ["Vật tư","Đội thi công","Nhân công","Máy móc","Chi Phí MKT","Chi Phí VP","Chi phí khác"];
+const EXPENSE_CATS = ["Vật tư","Đội thi công","Nhân công","Máy móc","Chi phí khác"];
+const OPEX_CATS = ["Chi Phí MKT","Chi Phí VP","Chi Phí Nhân Sự","Chi phí khác"];
 const PROJECT_TYPES = ["Nội thất cao cấp","Thi công hoàn thiện","Decor & Nội thất","Cải tạo","Thiết kế & Thi công"];
 const MONTHS = ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11","T12"];
 const CHART_COLORS = [C.accent, C.success, C.amber, C.purple, C.teal, C.danger];
@@ -320,6 +321,7 @@ export default function App(){
   const [receipts,setReceipts] = useState([]);
   const [expenses,setExpenses] = useState([]);
   const [vendors,setVendors]   = useState([]);
+  const [opex,setOpex]         = useState([]); // Chi phí chung công ty (MKT, VP, Nhân sự...)
   const [selProjId,setSelProjId] = useState(null);
   const [selMonth,setSelMonth] = useState(null);
   const [modal,setModal] = useState(null);
@@ -343,23 +345,40 @@ export default function App(){
       setReceipts(saved.receipts || []);
       setExpenses(saved.expenses || []);
       setVendors(saved.vendors || []);
+      setOpex(saved.opex || []);
     }
     setLoading(false);
   },[]);
 
-  // Tự động lưu xuống máy MỖI KHI có bất kỳ thay đổi nào ở 4 danh sách này.
+  // Tự động lưu xuống máy MỖI KHI có bất kỳ thay đổi nào ở 5 danh sách này.
   // Không cần bấm nút gì cả — cứ thêm/sửa/xoá là lưu ngay lập tức.
   const isFirstRun = useRef(true);
   useEffect(()=>{
     if (isFirstRun.current) { isFirstRun.current = false; return; } // tránh ghi đè lúc mới load
-    saveToStorage({ projects, receipts, expenses, vendors });
-  },[projects, receipts, expenses, vendors]);
+    saveToStorage({ projects, receipts, expenses, vendors, opex });
+  },[projects, receipts, expenses, vendors, opex]);
 
   // ── Xuất dữ liệu ra file thật (JSON) — bạn tự chọn nơi lưu trên ổ đĩa ────────
   const importFileRef = useRef(null);
 
+  // ── Xuất báo cáo PDF (dùng chức năng In của trình duyệt) ─────────────────────
+  // printMode: null | "overview" | "cashflow" | "project"
+  // Khi bật, ẩn toàn bộ giao diện app, chỉ hiện đúng nội dung báo cáo để in đẹp.
+  const [printMode, setPrintMode] = useState(null);
+  const [printProjectId, setPrintProjectId] = useState(null);
+
+  function exportPDF(mode, projectId=null) {
+    setPrintProjectId(projectId);
+    setPrintMode(mode);
+    // Đợi React render xong nội dung in rồi mới gọi lệnh in của trình duyệt
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => setPrintMode(null), 300);
+    }, 150);
+  }
+
   function exportToFile() {
-    const payload = { projects, receipts, expenses, vendors, exportedAt: new Date().toISOString() };
+    const payload = { projects, receipts, expenses, vendors, opex, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -384,6 +403,7 @@ export default function App(){
         setReceipts(data.receipts || []);
         setExpenses(data.expenses || []);
         setVendors(data.vendors || []);
+        setOpex(data.opex || []);
         showToast("Đã nạp dữ liệu từ file thành công ✓");
       } catch(err) {
         showToast("File không đúng định dạng, không thể nạp ✗", "error");
@@ -393,12 +413,14 @@ export default function App(){
   }
 
   // ── derived ────────────────────────────────────────────────────────────────
-  const totalContract = projects.reduce((s,p)=>s+p.contractValue,0);
-  const totalReceived = receipts.reduce((s,r)=>s+r.amount,0);
-  const totalExpense  = expenses.reduce((s,e)=>s+e.amount,0);
-  const totalUnpaid   = expenses.filter(e=>!e.paid).reduce((s,e)=>s+e.amount,0);
-  const netFlow       = totalReceived - totalExpense;
-  const pendingRecv   = totalContract - totalReceived;
+  const totalContract  = projects.reduce((s,p)=>s+p.contractValue,0);
+  const totalReceived  = receipts.reduce((s,r)=>s+r.amount,0);
+  const totalExpense   = expenses.reduce((s,e)=>s+e.amount,0); // chi phí theo công trình
+  const totalOpex      = opex.reduce((s,o)=>s+o.amount,0); // chi phí chung công ty
+  const totalUnpaid    = expenses.filter(e=>!e.paid).reduce((s,e)=>s+e.amount,0)
+                        + opex.filter(o=>!o.paid).reduce((s,o)=>s+o.amount,0);
+  const netFlow        = totalReceived - totalExpense - totalOpex;
+  const pendingRecv     = totalContract - totalReceived;
 
   // Tự động lấy năm hiện tại thay vì cố định "2026" — tránh biểu đồ trống
   // khi dữ liệu người dùng nhập vào không đúng năm 2026.
@@ -414,9 +436,11 @@ export default function App(){
   const monthlyData = useMemo(()=>Array.from({length:12},(_,i)=>{
     const m=String(i+1).padStart(2,"0");
     const inc=receipts.filter(r=>r.date&&r.date.slice(5,7)===m&&r.date.startsWith(currentYear)).reduce((s,r)=>s+r.amount,0);
-    const exp=expenses.filter(e=>e.date&&e.date.slice(5,7)===m&&e.date.startsWith(currentYear)).reduce((s,e)=>s+e.amount,0);
+    const expProj=expenses.filter(e=>e.date&&e.date.slice(5,7)===m&&e.date.startsWith(currentYear)).reduce((s,e)=>s+e.amount,0);
+    const expOpex=opex.filter(o=>o.date&&o.date.slice(5,7)===m&&o.date.startsWith(currentYear)).reduce((s,o)=>s+o.amount,0);
+    const exp = expProj + expOpex;
     return {label:MONTHS[i],inc,exp,net:inc-exp};
-  }),[receipts,expenses,currentYear]);
+  }),[receipts,expenses,opex,currentYear]);
 
   const forecastMonths = useMemo(()=>{
     const with3=monthlyData.filter(m=>m.inc>0||m.exp>0).slice(-3);
@@ -445,11 +469,13 @@ export default function App(){
   const blankR = {projectId:"",date:today(),amount:"",note:"",attachments:[],isExtra:false};
   const blankE = {projectId:"",date:today(),category:EXPENSE_CATS[0],amount:"",vendorId:"",note:"",paid:false};
   const blankV = {name:"",type:"supplier",phone:"",category:"Vật tư",note:""};
+  const blankO = {date:today(),category:OPEX_CATS[0],amount:"",note:"",paid:false};
 
   const [pForm,setPForm] = useState(blankP);
   const [rForm,setRForm] = useState(blankR);
   const [eForm,setEForm] = useState(blankE);
   const [vForm,setVForm] = useState(blankV);
+  const [oForm,setOForm] = useState(blankO);
   const [newContractFiles,setNewContractFiles] = useState([]);
 
   function saveProject(){
@@ -492,6 +518,18 @@ export default function App(){
     setModal(null); setVForm(blankV);
     showToast("Đã lưu NCC/Đội vào máy ✓");
   }
+  function saveOpex(){
+    if(!oForm.amount) return;
+    const id = editItem?.id || "o"+Date.now();
+    const obj = {...oForm, amount:parseFloat(oForm.amount), id, _type:undefined};
+    if(editItem&&editItem._type==="opex") {
+      setOpex(prev=>prev.map(o=>o.id===editItem.id?obj:o));
+    } else {
+      setOpex(prev=>[obj,...prev]);
+    }
+    setModal(null); setOForm(blankO); setEditItem(null);
+    showToast("Đã lưu chi phí công ty vào máy ✓");
+  }
 
   const activeProj = projects.find(p=>p.id===selProjId);
 
@@ -499,16 +537,21 @@ export default function App(){
     {id:"dashboard",label:"📊 Tổng quan"},
     {id:"projects", label:"🏗 Công trình"},
     {id:"cashflow", label:"💰 Thu/Chi"},
+    {id:"opex",     label:"🏢 Chi phí công ty"},
     {id:"debt",     label:"⚠️ Công nợ"},
     {id:"report",   label:"📈 Dòng tiền"},
   ];
 
-  // expense breakdown by category for donut
+  // Cơ cấu chi phí: GỘP CHUNG chi phí công trình + chi phí công ty theo danh mục,
+  // sắp xếp giảm dần theo tỷ trọng (giống biểu đồ tròn Excel tham khảo)
   const expByCat = useMemo(()=>{
     const map={};
     expenses.forEach(e=>{map[e.category]=(map[e.category]||0)+e.amount;});
-    return Object.entries(map).map(([name,value],i)=>({name,value,color:CHART_COLORS[i%CHART_COLORS.length]}));
-  },[expenses]);
+    opex.forEach(o=>{map[o.category]=(map[o.category]||0)+o.amount;});
+    return Object.entries(map)
+      .sort((a,b)=>b[1]-a[1])
+      .map(([name,value],i)=>({name,value,color:CHART_COLORS[i%CHART_COLORS.length]}));
+  },[expenses,opex]);
 
   // receipt breakdown by project for donut
   const recByProj = useMemo(()=>{
@@ -518,8 +561,218 @@ export default function App(){
     }).filter(x=>x.value>0);
   },[projects,receipts]);
 
+  // ── Nội dung báo cáo dùng khi In/Xuất PDF ────────────────────────────────────
+  function PrintReport() {
+    const printDate = new Date().toLocaleDateString("vi-VN");
+    if (printMode === "overview") {
+      return (
+        <div className="print-only" style={{padding:24,fontFamily:"'Inter','Segoe UI',sans-serif",color:"#1a1916"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",borderBottom:"2px solid #1a1916",paddingBottom:12,marginBottom:20}}>
+            <div>
+              <div style={{fontSize:22,fontWeight:800}}>🏛 BuildFlow</div>
+              <div style={{fontSize:13,color:"#666"}}>Báo cáo tổng quan dòng tiền</div>
+            </div>
+            <div style={{fontSize:12,color:"#666"}}>Ngày in: {printDate}</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:24}}>
+            {[
+              {label:"Tổng hợp đồng",val:totalContract},
+              {label:"Đã thu",val:totalReceived},
+              {label:"Còn thu",val:pendingRecv},
+              {label:"Tổng chi (CT + công ty)",val:totalExpense+totalOpex},
+              {label:"Nợ chưa TT",val:totalUnpaid},
+            ].map(k=>(
+              <div key={k.label} style={{border:"1px solid #ddd",borderRadius:8,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:"#666"}}>{k.label}</div>
+                <div style={{fontSize:15,fontWeight:700}}>{fmt(k.val)}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,borderBottom:"1px solid #ccc",paddingBottom:6}}>Danh sách công trình</div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:24}}>
+            <thead>
+              <tr style={{borderBottom:"1.5px solid #333"}}>
+                {["Công trình","Khách hàng","Trạng thái","Giá trị HĐ","Đã thu","Đã chi","Lợi nhuận"].map(h=>(
+                  <th key={h} style={{textAlign:"left",padding:"6px 8px",fontSize:10,color:"#555"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {projects.map(p=>{
+                const st=projectStats(p.id);
+                const statusLabel = p.status==="active"?"Đang thi công":p.status==="done"?"Hoàn thành":"Chờ khởi công";
+                return (
+                  <tr key={p.id} style={{borderBottom:"1px solid #eee"}}>
+                    <td style={{padding:"6px 8px",fontWeight:600}}>{p.name}</td>
+                    <td style={{padding:"6px 8px"}}>{p.client}</td>
+                    <td style={{padding:"6px 8px"}}>{statusLabel}</td>
+                    <td style={{padding:"6px 8px"}}>{fmt(p.contractValue)}</td>
+                    <td style={{padding:"6px 8px"}}>{fmt(st.recv)}</td>
+                    <td style={{padding:"6px 8px"}}>{fmt(st.exp)}</td>
+                    <td style={{padding:"6px 8px",fontWeight:600}}>{fmt(st.net)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {vendors.filter(v=>vendorDebt(v.id)>0).length>0 && (
+            <>
+              <div style={{fontSize:15,fontWeight:700,marginBottom:10,borderBottom:"1px solid #ccc",paddingBottom:6}}>Công nợ NCC / Đội thi công còn nợ</div>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead>
+                  <tr style={{borderBottom:"1.5px solid #333"}}>
+                    {["Tên","Loại","SĐT","Số tiền còn nợ"].map(h=>(
+                      <th key={h} style={{textAlign:"left",padding:"6px 8px",fontSize:10,color:"#555"}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {vendors.filter(v=>vendorDebt(v.id)>0).map(v=>(
+                    <tr key={v.id} style={{borderBottom:"1px solid #eee"}}>
+                      <td style={{padding:"6px 8px",fontWeight:600}}>{v.name}</td>
+                      <td style={{padding:"6px 8px"}}>{v.type==="team"?"Đội thi công":"Nhà cung cấp"}</td>
+                      <td style={{padding:"6px 8px"}}>{v.phone}</td>
+                      <td style={{padding:"6px 8px",fontWeight:600}}>{fmt(vendorDebt(v.id))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      );
+    }
+    if (printMode === "cashflow") {
+      let running = 0;
+      return (
+        <div className="print-only" style={{padding:24,fontFamily:"'Inter','Segoe UI',sans-serif",color:"#1a1916"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",borderBottom:"2px solid #1a1916",paddingBottom:12,marginBottom:20}}>
+            <div>
+              <div style={{fontSize:22,fontWeight:800}}>🏛 BuildFlow</div>
+              <div style={{fontSize:13,color:"#666"}}>Báo cáo dòng tiền theo tháng {currentYear}</div>
+            </div>
+            <div style={{fontSize:12,color:"#666"}}>Ngày in: {printDate}</div>
+          </div>
+          <div style={{display:"flex",gap:20,marginBottom:20}}>
+            <div><div style={{fontSize:11,color:"#666"}}>TB thu/tháng</div><div style={{fontSize:15,fontWeight:700}}>{fmt(forecastMonths[0]?.inc||0)}</div></div>
+            <div><div style={{fontSize:11,color:"#666"}}>TB chi/tháng</div><div style={{fontSize:15,fontWeight:700}}>{fmt(forecastMonths[0]?.exp||0)}</div></div>
+            <div><div style={{fontSize:11,color:"#666"}}>Số dư ròng hiện tại</div><div style={{fontSize:15,fontWeight:700}}>{fmt(netFlow)}</div></div>
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead>
+              <tr style={{borderBottom:"1.5px solid #333"}}>
+                {["Tháng","Thu","Chi","Ròng","Tích lũy"].map(h=>(
+                  <th key={h} style={{textAlign:"left",padding:"6px 8px",fontSize:10,color:"#555"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyData.map((m,i)=>{
+                running += m.net;
+                return (
+                  <tr key={i} style={{borderBottom:"1px solid #eee"}}>
+                    <td style={{padding:"6px 8px",fontWeight:600}}>{m.label}/{currentYear}</td>
+                    <td style={{padding:"6px 8px"}}>{m.inc?fmt(m.inc):"—"}</td>
+                    <td style={{padding:"6px 8px"}}>{m.exp?fmt(m.exp):"—"}</td>
+                    <td style={{padding:"6px 8px",fontWeight:600}}>{(m.inc||m.exp)?fmt(m.net):"—"}</td>
+                    <td style={{padding:"6px 8px",fontWeight:600}}>{(m.inc||m.exp)?fmt(running):"—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    if (printMode === "project" && printProjectId) {
+      const p = projects.find(x=>x.id===printProjectId);
+      if (!p) return null;
+      const st = projectStats(p.id);
+      const pRec = receipts.filter(r=>r.projectId===p.id);
+      const pExp = expenses.filter(e=>e.projectId===p.id);
+      const statusLabel = p.status==="active"?"Đang thi công":p.status==="done"?"Hoàn thành":"Chờ khởi công";
+      return (
+        <div className="print-only" style={{padding:24,fontFamily:"'Inter','Segoe UI',sans-serif",color:"#1a1916"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",borderBottom:"2px solid #1a1916",paddingBottom:12,marginBottom:20}}>
+            <div>
+              <div style={{fontSize:22,fontWeight:800}}>🏛 BuildFlow</div>
+              <div style={{fontSize:13,color:"#666"}}>Báo cáo công trình: {p.name}</div>
+            </div>
+            <div style={{fontSize:12,color:"#666"}}>Ngày in: {printDate}</div>
+          </div>
+          <div style={{marginBottom:16,fontSize:13,lineHeight:1.8}}>
+            <div>👤 Khách hàng: <strong>{p.client}</strong> · 📞 {p.phone}</div>
+            <div>📍 Địa chỉ: {p.address}</div>
+            <div>📅 Thời gian: {p.startDate} → {p.endDate}</div>
+            <div>🏷 Loại: {p.type} · Trạng thái: {statusLabel}</div>
+            {p.note && <div>💬 Ghi chú: {p.note}</div>}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:24}}>
+            {[
+              {label:"Giá trị HĐ",val:p.contractValue},
+              {label:"Đã thu (HĐ gốc)",val:st.contractRecv},
+              {label:"Thu phát sinh",val:st.extraRecv},
+              {label:"Đã chi",val:st.exp},
+              {label:"Lợi nhuận tạm",val:st.net},
+            ].map(k=>(
+              <div key={k.label} style={{border:"1px solid #ddd",borderRadius:8,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:"#666"}}>{k.label}</div>
+                <div style={{fontSize:14,fontWeight:700}}>{fmt(k.val)}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,borderBottom:"1px solid #ccc",paddingBottom:6}}>Thu tiền khách hàng ({pRec.length})</div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:20}}>
+            <thead><tr style={{borderBottom:"1.5px solid #333"}}>{["Ngày","Ghi chú","Số tiền"].map(h=><th key={h} style={{textAlign:"left",padding:"6px 8px",fontSize:10,color:"#555"}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {pRec.map(r=>(
+                <tr key={r.id} style={{borderBottom:"1px solid #eee"}}>
+                  <td style={{padding:"6px 8px"}}>{r.date}</td>
+                  <td style={{padding:"6px 8px"}}>{r.note}{r.isExtra?" (Phát sinh)":""}</td>
+                  <td style={{padding:"6px 8px",fontWeight:600}}>+{fmt(r.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10,borderBottom:"1px solid #ccc",paddingBottom:6}}>Chi phí công trình ({pExp.length})</div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{borderBottom:"1.5px solid #333"}}>{["Ngày","Danh mục","NCC/Đội","Ghi chú","Số tiền","TT"].map(h=><th key={h} style={{textAlign:"left",padding:"6px 8px",fontSize:10,color:"#555"}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {pExp.map(e=>{
+                const v=vendors.find(x=>x.id===e.vendorId);
+                return (
+                  <tr key={e.id} style={{borderBottom:"1px solid #eee"}}>
+                    <td style={{padding:"6px 8px"}}>{e.date}</td>
+                    <td style={{padding:"6px 8px"}}>{e.category}</td>
+                    <td style={{padding:"6px 8px"}}>{v?.name||"—"}</td>
+                    <td style={{padding:"6px 8px"}}>{e.note}</td>
+                    <td style={{padding:"6px 8px",fontWeight:600}}>-{fmt(e.amount)}</td>
+                    <td style={{padding:"6px 8px"}}>{e.paid?"Đã TT":"Chưa TT"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    return null;
+  }
+
   return (
     <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:C.bg,minHeight:"100vh",color:C.txt}}>
+      {/* CSS chỉ áp dụng khi in / xuất PDF: ẩn giao diện app, chỉ hiện báo cáo */}
+      <style>{`
+        .print-only { display: none; }
+        @media print {
+          body * { visibility: hidden; }
+          .print-only, .print-only * { visibility: visible; }
+          .print-only { display: block !important; position: absolute; top: 0; left: 0; width: 100%; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+      <PrintReport />
+      <div className="no-print">
       {/* Toast */}
       {toast && (
         <div style={{position:"fixed",bottom:24,right:24,zIndex:9999,background:toast.type==="success"?"#15803d":"#b91c1c",color:"#fff",padding:"12px 20px",borderRadius:12,fontSize:13,fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",display:"flex",alignItems:"center",gap:8}}>
@@ -551,6 +804,10 @@ export default function App(){
             </div>
             <div style={{display:"flex",alignItems:"center",gap:16}}>
               <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>exportPDF("overview")} title="Xuất báo cáo tổng quan ra PDF"
+                  style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.2)",background:"rgba(255,255,255,0.08)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
+                  🖨 Xuất PDF
+                </button>
                 <button onClick={exportToFile} title="Tải file backup xuống máy (JSON)"
                   style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.2)",background:"rgba(255,255,255,0.08)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
                   💾 Sao lưu
@@ -590,8 +847,9 @@ export default function App(){
                 {label:"Tổng hợp đồng",val:totalContract,color:C.accent},
                 {label:"Đã thu",val:totalReceived,color:C.success},
                 {label:"Còn thu",val:pendingRecv,color:C.amber},
-                {label:"Tổng chi",val:totalExpense,color:C.danger},
-                {label:"Nợ NCC chưa TT",val:totalUnpaid,color:C.purple},
+                {label:"Chi phí công trình",val:totalExpense,color:C.danger},
+                {label:"Chi phí công ty",val:totalOpex,color:"#ea580c"},
+                {label:"Nợ chưa TT",val:totalUnpaid,color:C.purple},
               ].map(k=>(
                 <div key={k.label} style={card({padding:"14px 16px"})}>
                   <div style={{fontSize:11,color:C.muted,marginBottom:4}}>{k.label}</div>
@@ -624,17 +882,23 @@ export default function App(){
             {/* Donuts row */}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
               <div style={card({padding:20})}>
-                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Cơ cấu chi phí</div>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:2}}>Cơ cấu chi phí</div>
+                <div style={{fontSize:11,color:C.muted,marginBottom:12}}>Gồm chi phí công trình + chi phí công ty</div>
                 <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
                   <DonutChart segments={expByCat} size={120}/>
                   <div style={{flex:1}}>
-                    {expByCat.map((c,i)=>(
-                      <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                        <span style={{width:8,height:8,borderRadius:"50%",background:c.color,display:"inline-block",flexShrink:0}}/>
-                        <span style={{fontSize:11,color:C.muted,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name}</span>
-                        <span style={{fontSize:11,fontWeight:600}}>{fmtM(c.value)}</span>
-                      </div>
-                    ))}
+                    {expByCat.map((c,i)=>{
+                      const total = expByCat.reduce((s,x)=>s+x.value,0);
+                      const pct = total ? (c.value/total*100) : 0;
+                      return (
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                          <span style={{width:8,height:8,borderRadius:"50%",background:c.color,display:"inline-block",flexShrink:0}}/>
+                          <span style={{fontSize:11,color:C.muted,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name}</span>
+                          <span style={{fontSize:11,fontWeight:700,color:C.txt}}>{pct.toFixed(1)}%</span>
+                          <span style={{fontSize:10,color:C.muted,minWidth:50,textAlign:"right"}}>{fmtM(c.value)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -766,12 +1030,15 @@ export default function App(){
                       </div>
                     )}
                   </div>
-                  <button style={btn(C.accentB,C.accent)} onClick={()=>{
-                    setEditItem(p);
-                    setPForm({...p,contractValue:String(p.contractValue)});
-                    setNewContractFiles([]);
-                    setModal("project");
-                  }}>Sửa</button>
+                  <div style={{display:"flex",gap:8}}>
+                    <button style={btn("#f1f0ec",C.txt)} onClick={()=>exportPDF("project",p.id)}>🖨 Xuất PDF</button>
+                    <button style={btn(C.accentB,C.accent)} onClick={()=>{
+                      setEditItem(p);
+                      setPForm({...p,contractValue:String(p.contractValue)});
+                      setNewContractFiles([]);
+                      setModal("project");
+                    }}>Sửa</button>
+                  </div>
                 </div>
                 <div style={{marginTop:16,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10}}>
                   {[
@@ -944,6 +1211,88 @@ export default function App(){
           </div>
         )}
 
+        {/* ── OPEX (Chi phí công ty) ────────────────────────────────────── */}
+        {tab==="opex" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <div style={{background:C.accentB,border:`1px solid ${C.accent}33`,borderRadius:R.md,padding:"12px 16px",fontSize:12,color:C.accent}}>
+              💡 Đây là các khoản chi <strong>không thuộc riêng công trình nào</strong> — chi phí vận hành chung của công ty (Marketing, Văn phòng, Nhân sự...). Các khoản này vẫn được tính vào tổng dòng tiền chi của công ty, nhưng tách biệt khỏi lợi nhuận từng công trình.
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12}}>
+              {[
+                {label:"Tổng chi phí công ty",val:totalOpex,color:C.danger},
+                {label:"Chưa thanh toán",val:opex.filter(o=>!o.paid).reduce((s,o)=>s+o.amount,0),color:C.warn},
+                {label:"Đã thanh toán",val:opex.filter(o=>o.paid).reduce((s,o)=>s+o.amount,0),color:C.success},
+              ].map(s=>(
+                <div key={s.label} style={card({padding:"14px 16px"})}>
+                  <div style={{fontSize:11,color:C.muted}}>{s.label}</div>
+                  <div style={{fontSize:18,fontWeight:700,color:s.color,marginTop:2}}>{fmtM(s.val)}</div>
+                </div>
+              ))}
+            </div>
+            {/* Breakdown by category */}
+            {opex.length>0 && (
+              <div style={card({padding:20})}>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Cơ cấu theo danh mục</div>
+                {(() => {
+                  const map={};
+                  opex.forEach(o=>{map[o.category]=(map[o.category]||0)+o.amount;});
+                  const entries = Object.entries(map).sort((a,b)=>b[1]-a[1]);
+                  const maxVal = entries[0]?.[1]||1;
+                  return entries.map(([cat,val],i)=>(
+                    <div key={cat} style={{marginBottom:10}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                        <span style={{fontSize:12}}>{cat}</span>
+                        <span style={{fontSize:12,fontWeight:600}}>{fmtM(val)}</span>
+                      </div>
+                      <MiniBar pct={(val/maxVal)*100} color={CHART_COLORS[i%CHART_COLORS.length]}/>
+                    </div>
+                  ));
+                })()}
+              </div>
+            )}
+            <div style={{display:"flex",justifyContent:"flex-end"}}>
+              <button style={btn()} onClick={()=>{setEditItem(null);setOForm(blankO);setModal("opex");}}>+ Ghi chi phí công ty</button>
+            </div>
+            {opex.length===0 ? (
+              <div style={{textAlign:"center",padding:"32px 0",color:C.hint,fontSize:13}}>Chưa có khoản chi phí công ty nào.</div>
+            ) : (
+              [...opex].sort((a,b)=>b.date.localeCompare(a.date)).map(o=>(
+                <div key={o.id} style={card({padding:"14px 18px"})}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+                    <div style={{display:"flex",gap:12,alignItems:"center",flex:1,minWidth:0}}>
+                      <div style={{width:36,height:36,borderRadius:10,background:"#fee2e2",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>🏢</div>
+                      <div style={{minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:600}}>{o.note || o.category}</div>
+                        <div style={{fontSize:11,color:C.muted}}>{o.category} · {o.date}</div>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontWeight:700,fontSize:14,color:C.danger}}>-{fmtM(o.amount)}</div>
+                        {o.paid?<Tag label="Đã TT" bg={C.successB} color={C.success}/>:<Tag label="Chưa TT" bg={C.warnB} color={C.warn}/>}
+                      </div>
+                      <button title="Sửa" onClick={()=>{
+                        setEditItem({...o,_type:"opex"});
+                        setOForm({date:o.date,category:o.category,amount:String(o.amount),note:o.note,paid:o.paid});
+                        setModal("opex");
+                      }} style={{width:30,height:30,borderRadius:8,border:"1px solid #e2e8f0",background:"#fff",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
+                      <button title="Xoá" onClick={()=>{
+                        if(!window.confirm("Xoá khoản chi này?")) return;
+                        setOpex(prev=>prev.filter(x=>x.id!==o.id));
+                        showToast("Đã xoá khoản chi ✓");
+                      }} style={{width:30,height:30,borderRadius:8,border:"1px solid #fecaca",background:"#fff",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center"}}>🗑</button>
+                      {!o.paid && (
+                        <button onClick={()=>{setOpex(prev=>prev.map(x=>x.id===o.id?{...x,paid:true}:x)); showToast("Đã đánh dấu thanh toán ✓");}}
+                          style={{...btn(C.warnB,C.warn),padding:"5px 10px",fontSize:11}}>Thanh toán</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
         {/* ── DEBT ──────────────────────────────────────────────────────── */}
         {tab==="debt" && (
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
@@ -1014,9 +1363,12 @@ export default function App(){
           const mExpSum = mExp.reduce((s,e)=>s+e.amount,0);
           return (
           <div style={{display:"flex",flexDirection:"column",gap:20}}>
+            <div style={{display:"flex",justifyContent:"flex-end"}}>
+              <button onClick={()=>exportPDF("cashflow")} style={btn(C.accentB,C.accent)}>🖨 Xuất báo cáo PDF</button>
+            </div>
             {/* Forecast header */}
             <div style={{...card({padding:20}),background:"#1a1916",border:"none"}}>
-              <div style={{color:"#fff",fontWeight:700,fontSize:16,marginBottom:4}}>Dự báo dòng tiền 6 tháng cuối 2026</div>
+              <div style={{color:"#fff",fontWeight:700,fontSize:16,marginBottom:4}}>Dự báo dòng tiền 6 tháng cuối {currentYear}</div>
               <div style={{color:"#aaa",fontSize:13}}>Dựa trên trung bình thu/chi 3 tháng gần nhất</div>
               <div style={{display:"flex",gap:24,marginTop:14,flexWrap:"wrap"}}>
                 {[
@@ -1073,7 +1425,7 @@ export default function App(){
               {selMonth!==null && (
                 <div>
                   <div style={{fontWeight:700,fontSize:15,marginBottom:12,color:C.accent}}>
-                    Chi tiết tháng {selMonth+1}/2026
+                    Chi tiết tháng {selMonth+1}/{currentYear}
                   </div>
                   {/* KPIs */}
                   <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:16}}>
@@ -1339,6 +1691,31 @@ export default function App(){
           </div>
         </Modal>
       )}
+
+      {/* ── MODAL: OPEX (Chi phí công ty) ─────────────────────────────── */}
+      {modal==="opex" && (
+        <Modal title={editItem&&editItem._type==="opex"?"Sửa chi phí công ty":"Ghi chi phí công ty"} onClose={()=>{setModal(null);setEditItem(null);}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Field label="Ngày chi"><input type="date" style={inp} value={oForm.date} onChange={e=>setOForm(f=>({...f,date:e.target.value}))}/></Field>
+            <Field label="Danh mục">
+              <select style={inp} value={oForm.category} onChange={e=>setOForm(f=>({...f,category:e.target.value}))}>
+                {OPEX_CATS.map(c=><option key={c}>{c}</option>)}
+              </select>
+            </Field>
+          </div>
+          <Field label="Số tiền (đ) *"><input type="number" step="any" style={inp} value={oForm.amount} onChange={e=>setOForm(f=>({...f,amount:e.target.value}))} placeholder="VD: 5000000"/></Field>
+          <Field label="Ghi chú"><input style={inp} value={oForm.note} onChange={e=>setOForm(f=>({...f,note:e.target.value}))} placeholder="VD: Chạy ads Facebook tháng 7, Tiền thuê VP..."/></Field>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+            <input type="checkbox" id="opexPaid" checked={oForm.paid} onChange={e=>setOForm(f=>({...f,paid:e.target.checked}))}/>
+            <label htmlFor="opexPaid" style={{fontSize:13}}>Đã thanh toán ngay</label>
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <button style={btn(C.danger)} onClick={saveOpex}>{editItem&&editItem._type==="opex"?"Lưu thay đổi":"Ghi chi"}</button>
+            <button style={btn("#f1f0ec",C.txt)} onClick={()=>{setModal(null);setEditItem(null);}}>Hủy</button>
+          </div>
+        </Modal>
+      )}
+      </div>
     </div>
   );
 }
