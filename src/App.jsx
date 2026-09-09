@@ -94,7 +94,7 @@ const SEED_VENDORS_UNUSED = [
 ];
 
 const EXPENSE_CATS = ["Vật tư","Đội thi công","Nhân công","Máy móc","Chi phí khác"];
-const OPEX_CATS = ["Chi Phí MKT","Chi Phí VP","Chi Phí Nhân Sự","Chi phí khác"];
+const OPEX_CATS = ["Vốn Ban Đầu","Chi Phí MKT","Chi Phí VP","Chi Phí Nhân Sự","Chi phí khác"];
 const PROJECT_TYPES = ["Nội thất cao cấp","Thi công hoàn thiện","Decor & Nội thất","Cải tạo","Thiết kế & Thi công"];
 const MONTHS = ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11","T12"];
 const CHART_COLORS = [C.accent, C.success, C.amber, C.purple, C.teal, C.danger];
@@ -322,8 +322,11 @@ export default function App(){
   const [expenses,setExpenses] = useState([]);
   const [vendors,setVendors]   = useState([]);
   const [opex,setOpex]         = useState([]); // Chi phí chung công ty (MKT, VP, Nhân sự...)
+  // Lưu ý: KHÔNG còn state initialCapital riêng — vốn ban đầu giờ được tính tự động
+  // từ tổng các khoản Chi phí công ty có danh mục "Vốn Ban Đầu" (xem phần derived bên dưới).
   const [selProjId,setSelProjId] = useState(null);
   const [selMonth,setSelMonth] = useState(null);
+  const [selOpexMonth,setSelOpexMonth] = useState(null);
   const [modal,setModal] = useState(null);
   const [editItem,setEditItem] = useState(null);
   const [loading,setLoading] = useState(true);
@@ -350,7 +353,7 @@ export default function App(){
     setLoading(false);
   },[]);
 
-  // Tự động lưu xuống máy MỖI KHI có bất kỳ thay đổi nào ở 5 danh sách này.
+  // Tự động lưu xuống máy MỖI KHI có bất kỳ thay đổi nào ở các danh sách này.
   // Không cần bấm nút gì cả — cứ thêm/sửa/xoá là lưu ngay lập tức.
   const isFirstRun = useRef(true);
   useEffect(()=>{
@@ -416,11 +419,18 @@ export default function App(){
   const totalContract  = projects.reduce((s,p)=>s+p.contractValue,0);
   const totalReceived  = receipts.reduce((s,r)=>s+r.amount,0);
   const totalExpense   = expenses.reduce((s,e)=>s+e.amount,0); // chi phí theo công trình
-  const totalOpex      = opex.reduce((s,o)=>s+o.amount,0); // chi phí chung công ty
-  const totalUnpaid    = expenses.filter(e=>!e.paid).reduce((s,e)=>s+e.amount,0)
-                        + opex.filter(o=>!o.paid).reduce((s,o)=>s+o.amount,0);
-  const netFlow        = totalReceived - totalExpense - totalOpex;
-  const pendingRecv     = totalContract - totalReceived;
+  // "Vốn Ban Đầu" được ghi trong danh mục Chi phí công ty (để tiện quản lý chung),
+  // nhưng về bản chất là TIỀN GÓP VÀO chứ không phải chi phí — nên loại khỏi
+  // các phép tính tổng chi/dòng tiền ròng, chỉ dùng riêng để tính Số dư khả dụng.
+  const realOpex        = opex.filter(o=>o.category!=="Vốn Ban Đầu");
+  const totalOpex        = realOpex.reduce((s,o)=>s+o.amount,0); // chi phí chung công ty (không gồm vốn góp)
+  const totalUnpaid      = expenses.filter(e=>!e.paid).reduce((s,e)=>s+e.amount,0)
+                          + realOpex.filter(o=>!o.paid).reduce((s,o)=>s+o.amount,0);
+  const netFlow          = totalReceived - totalExpense - totalOpex;
+  const pendingRecv       = totalContract - totalReceived;
+  // Vốn ban đầu = tổng các khoản Chi phí công ty có danh mục "Vốn Ban Đầu"
+  const initialCapital   = opex.filter(o=>o.category==="Vốn Ban Đầu").reduce((s,o)=>s+o.amount,0);
+  const availableBalance = initialCapital + netFlow; // Vốn ban đầu + Dòng tiền ròng = tiền thực tế còn lại
 
   // Tự động lấy năm hiện tại thay vì cố định "2026" — tránh biểu đồ trống
   // khi dữ liệu người dùng nhập vào không đúng năm 2026.
@@ -437,10 +447,10 @@ export default function App(){
     const m=String(i+1).padStart(2,"0");
     const inc=receipts.filter(r=>r.date&&r.date.slice(5,7)===m&&r.date.startsWith(currentYear)).reduce((s,r)=>s+r.amount,0);
     const expProj=expenses.filter(e=>e.date&&e.date.slice(5,7)===m&&e.date.startsWith(currentYear)).reduce((s,e)=>s+e.amount,0);
-    const expOpex=opex.filter(o=>o.date&&o.date.slice(5,7)===m&&o.date.startsWith(currentYear)).reduce((s,o)=>s+o.amount,0);
+    const expOpex=realOpex.filter(o=>o.date&&o.date.slice(5,7)===m&&o.date.startsWith(currentYear)).reduce((s,o)=>s+o.amount,0);
     const exp = expProj + expOpex;
     return {label:MONTHS[i],inc,exp,net:inc-exp};
-  }),[receipts,expenses,opex,currentYear]);
+  }),[receipts,expenses,realOpex,currentYear]);
 
   const forecastMonths = useMemo(()=>{
     const with3=monthlyData.filter(m=>m.inc>0||m.exp>0).slice(-3);
@@ -543,15 +553,16 @@ export default function App(){
   ];
 
   // Cơ cấu chi phí: GỘP CHUNG chi phí công trình + chi phí công ty theo danh mục,
-  // sắp xếp giảm dần theo tỷ trọng (giống biểu đồ tròn Excel tham khảo)
+  // sắp xếp giảm dần theo tỷ trọng (giống biểu đồ tròn Excel tham khảo).
+  // KHÔNG bao gồm "Vốn Ban Đầu" vì đây là vốn góp, không phải chi phí thực.
   const expByCat = useMemo(()=>{
     const map={};
     expenses.forEach(e=>{map[e.category]=(map[e.category]||0)+e.amount;});
-    opex.forEach(o=>{map[o.category]=(map[o.category]||0)+o.amount;});
+    realOpex.forEach(o=>{map[o.category]=(map[o.category]||0)+o.amount;});
     return Object.entries(map)
       .sort((a,b)=>b[1]-a[1])
       .map(([name,value],i)=>({name,value,color:CHART_COLORS[i%CHART_COLORS.length]}));
-  },[expenses,opex]);
+  },[expenses,realOpex]);
 
   // receipt breakdown by project for donut
   const recByProj = useMemo(()=>{
@@ -574,17 +585,18 @@ export default function App(){
             </div>
             <div style={{fontSize:12,color:"#666"}}>Ngày in: {printDate}</div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:24}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:24}}>
             {[
+              {label:"Vốn ban đầu",val:initialCapital},
               {label:"Tổng hợp đồng",val:totalContract},
               {label:"Đã thu",val:totalReceived},
               {label:"Còn thu",val:pendingRecv},
               {label:"Tổng chi (CT + công ty)",val:totalExpense+totalOpex},
-              {label:"Nợ chưa TT",val:totalUnpaid},
+              {label:"Số dư khả dụng",val:availableBalance},
             ].map(k=>(
               <div key={k.label} style={{border:"1px solid #ddd",borderRadius:8,padding:"10px 12px"}}>
                 <div style={{fontSize:10,color:"#666"}}>{k.label}</div>
-                <div style={{fontSize:15,fontWeight:700}}>{fmt(k.val)}</div>
+                <div style={{fontSize:14,fontWeight:700}}>{fmt(k.val)}</div>
               </div>
             ))}
           </div>
@@ -827,7 +839,7 @@ export default function App(){
           </div>
           <div style={{display:"flex",gap:2,marginTop:12,flexWrap:"wrap"}}>
             {TABS.map(t=>(
-              <button key={t.id} onClick={()=>{setTab(t.id);setSelProjId(null);setSelMonth(null);}}
+              <button key={t.id} onClick={()=>{setTab(t.id);setSelProjId(null);setSelMonth(null);setSelOpexMonth(null);}}
                 style={{padding:"9px 14px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,background:tab===t.id?C.bg:"transparent",color:tab===t.id?C.txt:"#aaa",borderRadius:"8px 8px 0 0",transition:"all .15s"}}>
                 {t.label}
               </button>
@@ -841,6 +853,20 @@ export default function App(){
         {/* ── DASHBOARD ──────────────────────────────────────────────────── */}
         {tab==="dashboard" && (
           <div style={{display:"flex",flexDirection:"column",gap:20}}>
+            {/* Vốn ban đầu & Số dư khả dụng — chỉ hiển thị, chỉnh sửa qua tab Chi phí công ty */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div style={card({padding:"14px 16px",cursor:"pointer"})} onClick={()=>setTab("opex")} title="Nhấn để ghi/sửa vốn góp ban đầu">
+                <div style={{fontSize:11,color:C.muted,marginBottom:6}}>💼 Vốn góp ban đầu</div>
+                <div style={{fontSize:20,fontWeight:700,color:C.accent}}>{fmtM(initialCapital)}</div>
+                <div style={{fontSize:10,color:C.muted,marginTop:2}}>Nhấn để ghi thêm ở tab Chi phí công ty →</div>
+              </div>
+              <div style={{...card({padding:"14px 16px"}),background:availableBalance>=0?C.successB:C.dangerB,border:`1px solid ${availableBalance>=0?"#86efac":"#fca5a5"}`}}>
+                <div style={{fontSize:11,color:C.muted,marginBottom:4}}>💰 Số dư khả dụng thực tế</div>
+                <div style={{fontSize:20,fontWeight:700,color:availableBalance>=0?C.success:C.danger}}>{fmtM(availableBalance)}</div>
+                <div style={{fontSize:10,color:C.muted,marginTop:2}}>Vốn ban đầu + Dòng tiền ròng</div>
+              </div>
+            </div>
+
             {/* KPIs */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12}}>
               {[
@@ -1215,13 +1241,14 @@ export default function App(){
         {tab==="opex" && (
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
             <div style={{background:C.accentB,border:`1px solid ${C.accent}33`,borderRadius:R.md,padding:"12px 16px",fontSize:12,color:C.accent}}>
-              💡 Đây là các khoản chi <strong>không thuộc riêng công trình nào</strong> — chi phí vận hành chung của công ty (Marketing, Văn phòng, Nhân sự...). Các khoản này vẫn được tính vào tổng dòng tiền chi của công ty, nhưng tách biệt khỏi lợi nhuận từng công trình.
+              💡 Đây là các khoản <strong>không thuộc riêng công trình nào</strong>: chi phí vận hành chung (Marketing, Văn phòng, Nhân sự...) và <strong>Vốn Ban Đầu</strong> (vốn góp — không tính vào chi phí, chỉ dùng để tính Số dư khả dụng ở tab Tổng quan).
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12}}>
               {[
-                {label:"Tổng chi phí công ty",val:totalOpex,color:C.danger},
-                {label:"Chưa thanh toán",val:opex.filter(o=>!o.paid).reduce((s,o)=>s+o.amount,0),color:C.warn},
-                {label:"Đã thanh toán",val:opex.filter(o=>o.paid).reduce((s,o)=>s+o.amount,0),color:C.success},
+                {label:"💼 Vốn Ban Đầu (đã góp)",val:initialCapital,color:C.accent},
+                {label:"Tổng chi phí thực",val:totalOpex,color:C.danger},
+                {label:"Chưa thanh toán",val:realOpex.filter(o=>!o.paid).reduce((s,o)=>s+o.amount,0),color:C.warn},
+                {label:"Đã thanh toán",val:realOpex.filter(o=>o.paid).reduce((s,o)=>s+o.amount,0),color:C.success},
               ].map(s=>(
                 <div key={s.label} style={card({padding:"14px 16px"})}>
                   <div style={{fontSize:11,color:C.muted}}>{s.label}</div>
@@ -1230,12 +1257,13 @@ export default function App(){
               ))}
             </div>
             {/* Breakdown by category */}
-            {opex.length>0 && (
+            {realOpex.length>0 && (
               <div style={card({padding:20})}>
-                <div style={{fontWeight:600,fontSize:14,marginBottom:12}}>Cơ cấu theo danh mục</div>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:2}}>Cơ cấu chi phí theo danh mục</div>
+                <div style={{fontSize:11,color:C.muted,marginBottom:12}}>Không gồm Vốn Ban Đầu</div>
                 {(() => {
                   const map={};
-                  opex.forEach(o=>{map[o.category]=(map[o.category]||0)+o.amount;});
+                  realOpex.forEach(o=>{map[o.category]=(map[o.category]||0)+o.amount;});
                   const entries = Object.entries(map).sort((a,b)=>b[1]-a[1]);
                   const maxVal = entries[0]?.[1]||1;
                   return entries.map(([cat,val],i)=>(
@@ -1250,25 +1278,129 @@ export default function App(){
                 })()}
               </div>
             )}
+
+            {/* ── BÁO CÁO CHI PHÍ CÔNG TY THEO THÁNG ── */}
+            {(() => {
+              const opexMonthly = Array.from({length:12},(_,i)=>{
+                const m=String(i+1).padStart(2,"0");
+                const val = opex.filter(o=>o.date&&o.date.slice(5,7)===m&&o.date.startsWith(currentYear)).reduce((s,o)=>s+o.amount,0);
+                return {label:MONTHS[i],val};
+              });
+              const mPad = selOpexMonth!==null ? String(selOpexMonth+1).padStart(2,"0") : null;
+              const mOpex = mPad ? opex.filter(o=>o.date&&o.date.slice(5,7)===mPad&&o.date.startsWith(currentYear)) : [];
+              const mSum = mOpex.reduce((s,o)=>s+o.amount,0);
+              return (
+                <div style={card({padding:20})}>
+                  <div style={{fontWeight:600,fontSize:15,marginBottom:14}}>Báo cáo chi phí công ty theo tháng {currentYear}</div>
+                  {/* Bar chart theo tháng */}
+                  <div style={{marginBottom:20}}>
+                    <div style={{display:"flex",alignItems:"flex-end",gap:4,height:100}}>
+                      {opexMonthly.map((m,i)=>{
+                        const maxVal = Math.max(...opexMonthly.map(x=>x.val),1);
+                        return (
+                          <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,height:"100%"}}>
+                            <div style={{flex:1,display:"flex",alignItems:"flex-end",width:"100%"}}>
+                              <div title={fmt(m.val)} style={{width:"100%",background:"#ea580c",borderRadius:"3px 3px 0 0",height:`${(m.val/maxVal)*100}%`,minHeight:m.val?2:0,transition:"height .4s"}}/>
+                            </div>
+                            <span style={{fontSize:9,color:C.muted}}>{m.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {/* Month selector */}
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
+                    {MONTHS.map((m,i)=>{
+                      const md=opexMonthly[i];
+                      const active=selOpexMonth===i;
+                      const hasData=md.val>0;
+                      return (
+                        <button key={i} onClick={()=>setSelOpexMonth(active?null:i)}
+                          style={{padding:"8px 14px",borderRadius:R.sm,border:active?"2px solid #ea580c":"1px solid rgba(0,0,0,0.1)",
+                            background:active?"#fff7ed":"#fafaf8",color:active?"#ea580c":hasData?C.txt:C.hint,
+                            fontWeight:active?700:400,cursor:"pointer",fontSize:13,transition:"all .15s"}}>
+                          {m}
+                          {hasData&&<div style={{fontSize:9,marginTop:1,color:active?"#ea580c":C.muted}}>{fmtM(md.val)}</div>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* Monthly detail */}
+                  {selOpexMonth!==null && (
+                    <div>
+                      <div style={{fontWeight:700,fontSize:14,marginBottom:10,color:"#ea580c"}}>
+                        Chi tiết tháng {selOpexMonth+1}/{currentYear} — Tổng: {fmtM(mSum)}
+                      </div>
+                      {mOpex.length===0 ? (
+                        <div style={{textAlign:"center",padding:"20px 0",color:C.hint,fontSize:13}}>Không có chi phí trong tháng {selOpexMonth+1}</div>
+                      ) : (
+                        mOpex.map(o=>(
+                          <div key={o.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid rgba(0,0,0,0.06)",fontSize:13}}>
+                            <div>
+                              <span style={{color:C.muted}}>{o.date}</span> · <strong>{o.category}</strong>
+                              <div style={{fontSize:11,color:C.muted}}>{o.note}</div>
+                            </div>
+                            <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0,marginLeft:12}}>
+                              <span style={{fontWeight:700,color:C.danger}}>-{fmtM(o.amount)}</span>
+                              {o.paid?<Tag label="Đã TT" bg={C.successB} color={C.success}/>:<Tag label="Chưa TT" bg={C.warnB} color={C.warn}/>}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                  {/* Bảng tổng hợp 12 tháng */}
+                  <div style={{marginTop:20,overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                      <thead>
+                        <tr style={{borderBottom:"1.5px solid rgba(0,0,0,0.14)"}}>
+                          {["Tháng","Chi phí công ty"].map(h=>(
+                            <th key={h} style={{textAlign:"left",padding:"8px 10px",color:C.muted,fontWeight:600,fontSize:11}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {opexMonthly.map((m,i)=>{
+                          const active=selOpexMonth===i;
+                          return (
+                            <tr key={i} onClick={()=>setSelOpexMonth(active?null:i)}
+                              style={{borderBottom:"1px solid rgba(0,0,0,0.08)",background:active?"#fff7ed":i%2===0?"#fafaf8":"#fff",cursor:"pointer"}}>
+                              <td style={{padding:"9px 10px",fontWeight:600,color:active?"#ea580c":C.txt}}>{m.label}/{currentYear}</td>
+                              <td style={{padding:"9px 10px",fontWeight:600,color:C.danger}}>{m.val?fmt(m.val):"—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div style={{display:"flex",justifyContent:"flex-end"}}>
               <button style={btn()} onClick={()=>{setEditItem(null);setOForm(blankO);setModal("opex");}}>+ Ghi chi phí công ty</button>
             </div>
             {opex.length===0 ? (
               <div style={{textAlign:"center",padding:"32px 0",color:C.hint,fontSize:13}}>Chưa có khoản chi phí công ty nào.</div>
             ) : (
-              [...opex].sort((a,b)=>b.date.localeCompare(a.date)).map(o=>(
+              [...opex].sort((a,b)=>b.date.localeCompare(a.date)).map(o=>{
+                const isCapital = o.category==="Vốn Ban Đầu";
+                return (
                 <div key={o.id} style={card({padding:"14px 18px"})}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
                     <div style={{display:"flex",gap:12,alignItems:"center",flex:1,minWidth:0}}>
-                      <div style={{width:36,height:36,borderRadius:10,background:"#fee2e2",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>🏢</div>
+                      <div style={{width:36,height:36,borderRadius:10,background:isCapital?C.successB:"#fee2e2",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{isCapital?"💼":"🏢"}</div>
                       <div style={{minWidth:0}}>
-                        <div style={{fontSize:13,fontWeight:600}}>{o.note || o.category}</div>
+                        <div style={{fontSize:13,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>
+                          {o.note || o.category}
+                          {isCapital && <Tag label="Vốn góp" bg={C.successB} color={C.success}/>}
+                        </div>
                         <div style={{fontSize:11,color:C.muted}}>{o.category} · {o.date}</div>
                       </div>
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                       <div style={{textAlign:"right"}}>
-                        <div style={{fontWeight:700,fontSize:14,color:C.danger}}>-{fmtM(o.amount)}</div>
+                        <div style={{fontWeight:700,fontSize:14,color:isCapital?C.success:C.danger}}>{isCapital?"+":"-"}{fmtM(o.amount)}</div>
                         {o.paid?<Tag label="Đã TT" bg={C.successB} color={C.success}/>:<Tag label="Chưa TT" bg={C.warnB} color={C.warn}/>}
                       </div>
                       <button title="Sửa" onClick={()=>{
@@ -1288,7 +1420,8 @@ export default function App(){
                     </div>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
