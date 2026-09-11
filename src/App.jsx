@@ -415,6 +415,35 @@ export default function App(){
     reader.readAsText(file);
   }
 
+  // ── Xóa sạch toàn bộ dữ liệu (2 lớp xác nhận để tránh bấm nhầm) ──────────────
+  function resetAllData() {
+    if (!window.confirm("⚠️ Xóa TOÀN BỘ dữ liệu (công trình, thu chi, NCC, chi phí công ty)?\n\nHành động này KHÔNG THỂ hoàn tác. Bạn nên nhấn 💾 Sao lưu trước nếu chưa làm.")) return;
+    if (!window.confirm("Xác nhận lần cuối: bạn CHẮC CHẮN muốn xóa hết dữ liệu chứ?")) return;
+    setProjects([]);
+    setReceipts([]);
+    setExpenses([]);
+    setVendors([]);
+    setOpex([]);
+    try { localStorage.removeItem(STORAGE_KEY); } catch(e) {}
+    showToast("Đã xóa toàn bộ dữ liệu ✓");
+  }
+
+  // Xóa 1 công trình — đồng thời xóa luôn các khoản thu/chi thuộc công trình đó
+  // để tránh dữ liệu "mồ côi" không còn công trình gốc.
+  function deleteProject(projectId, projectName) {
+    const relatedReceipts = receipts.filter(r=>r.projectId===projectId).length;
+    const relatedExpenses = expenses.filter(e=>e.projectId===projectId).length;
+    const warning = (relatedReceipts>0 || relatedExpenses>0)
+      ? `Công trình "${projectName}" đang có ${relatedReceipts} khoản thu và ${relatedExpenses} khoản chi.\n\nXóa công trình sẽ XÓA LUÔN toàn bộ các khoản thu/chi này. Hành động không thể hoàn tác.`
+      : `Xóa công trình "${projectName}"? Hành động không thể hoàn tác.`;
+    if (!window.confirm(warning)) return;
+    setProjects(prev=>prev.filter(p=>p.id!==projectId));
+    setReceipts(prev=>prev.filter(r=>r.projectId!==projectId));
+    setExpenses(prev=>prev.filter(e=>e.projectId!==projectId));
+    setSelProjId(null);
+    showToast("Đã xóa công trình ✓");
+  }
+
   // ── derived ────────────────────────────────────────────────────────────────
   const totalContract  = projects.reduce((s,p)=>s+p.contractValue,0);
   const totalReceived  = receipts.reduce((s,r)=>s+r.amount,0);
@@ -1007,9 +1036,13 @@ export default function App(){
                       <div style={{fontSize:12,color:C.muted,marginTop:4}}>👤 {p.client} · 📞 {p.phone}</div>
                       <div style={{fontSize:12,color:C.muted}}>📍 {p.address} · {p.startDate} → {p.endDate}</div>
                     </div>
-                    <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:17,fontWeight:700,color:C.accent}}>{fmtM(p.contractValue)}</div>
-                      <div style={{fontSize:12,color:C.muted}}>Hợp đồng</div>
+                    <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+                      <div>
+                        <div style={{fontSize:17,fontWeight:700,color:C.accent}}>{fmtM(p.contractValue)}</div>
+                        <div style={{fontSize:12,color:C.muted}}>Hợp đồng</div>
+                      </div>
+                      <button onClick={(e)=>{e.stopPropagation();deleteProject(p.id,p.name);}} title="Xóa công trình"
+                        style={{width:26,height:26,borderRadius:6,border:"1px solid #fecaca",background:"#fff",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",color:C.danger}}>🗑</button>
                     </div>
                   </div>
                   <div style={{marginTop:14,display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
@@ -1064,6 +1097,7 @@ export default function App(){
                       setNewContractFiles([]);
                       setModal("project");
                     }}>Sửa</button>
+                    <button style={btn(C.dangerB,C.danger)} onClick={()=>deleteProject(p.id,p.name)}>🗑 Xóa</button>
                   </div>
                 </div>
                 <div style={{marginTop:16,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10}}>
